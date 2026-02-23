@@ -1,0 +1,12 @@
+node_modules/
+dist/
+target/*
+!target/idl/
+!target/types/
+!target/deploy/
+target/deploy/*
+!target/deploy/memo_store.so
+.anchor/
+.env
+test-ledger/
+*-keypair.json

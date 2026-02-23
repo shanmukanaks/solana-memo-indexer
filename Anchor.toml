@@ -1,0 +1,23 @@
+[toolchain]
+anchor_version = "0.29.0"
+solana_version = "1.17.34"
+
+[features]
+seeds = false
+skip-lint = false
+
+[programs.localnet]
+memo_store = "6hEMnbQ2t52uP5h8LieSzVjaH1xrDpY8AWsYj86nTHbq"
+
+[programs.devnet]
+memo_store = "6hEMnbQ2t52uP5h8LieSzVjaH1xrDpY8AWsYj86nTHbq"
+
+[registry]
+url = "https://api.apr.dev"
+
+[provider]
+cluster = "localnet"
+wallet = "~/.config/solana/id.json"
+
+[scripts]
+test = "mocha --import=tsx --bail tests/main.test.ts --timeout 10000"
