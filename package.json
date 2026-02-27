@@ -17,6 +17,7 @@
     "dotenv": "^17.3.1",
     "fastq": "^1.20.1",
     "helius-laserstream": "^0.3.0",
+    "helius-sdk": "^2.2.2",
     "ioredis": "^5.9.3",
     "pino": "^10.3.1",
     "pino-pretty": "^13.1.3",

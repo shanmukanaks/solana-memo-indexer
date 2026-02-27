@@ -14,9 +14,9 @@ Stream abstraction (`MemoStream` interface) so the transport is swappable. Laser
 
 Why Laserstream over `onProgramAccountChange`: `fromSlot` replay for crash recovery, better throughput over gRPC, and the SDK handles reconnection.
 
-Updates go into a fastq queue (concurrency 1, capped at 10k). If the indexer falls behind it drops updates, they come back on the next Laserstream reconnect anyway. The worker decodes with `BorshAccountsCoder` and writes to Redis. Decode returns null on bad data, never throws. One bad memo doesn't crash the stream.
+All writes go through a single fastq queue (concurrency 1, capped at 10k). The stream, backfill, and reconciliation all push `AccountUpdate` into the same queue. The worker decodes with `BorshAccountsCoder` and writes to Redis. Decode returns null on bad data, never throws. One bad memo doesn't crash the stream.
 
-On first start (no cursor), the indexer does a `getProgramAccounts` backfill to snapshot all existing accounts before connecting the stream. This way it never misses memos that were created while the indexer was down. On subsequent starts, `fromSlot` replay handles the gap.
+The indexer fills gaps at three timescales. On first start (no cursor), a full `getProgramAccounts` backfill snapshots existing accounts before connecting the stream. On subsequent starts, Laserstream's `fromSlot` replays the gap since the last cursor. While running, a reconciliation job fires every 5 minutes using Helius's `getProgramAccountsV2` with `changedSinceSlot`, which returns only accounts modified since the last reconciliation, so O(changed) not O(total). Missing accounts get pushed into the queue. The stream handles the fast path, reconciliation handles correctness.
 
 Idempotency: each memo stores its `indexedAtSlot`. On replay, skip if incoming slot isn't newer. The cursor (`indexer:cursor.lastSlot`) uses `max(current, new)` so out of order slot delivery doesn't regress the resume point.
 
@@ -24,10 +24,12 @@ Redis keys:
 - `memo:<pubkey>` - hash with all fields
 - `memos:author:<pubkey>` - sorted set by nonce
 - `memos:recent` - sorted set by timestamp, capped at 1000
-- `indexer:cursor` - lastSlot + updatedAt for resume
+- `indexer:cursor` - lastSlot + updatedAt + lastReconciledSlot for resume
 - `indexer:stats` - totalIndexed, startedAt, lastIndexedAt
 
 Writes go through a pipeline so they're batched into one round trip.
+
+The queue is capped at 10k. If the stream delivers faster than the worker can drain, excess updates are dropped. This is safe because reconciliation catches any gaps within 5 minutes. The health endpoint exposes `queueDepth` so you can monitor buildup. A backpressure implementation might pause the gRPC stream at high depth, drain and then resume. The `storeMemo` write is a read then write with an async gap, safe because the queue serializes all writes at concurrency 1. A multi worker setup would need to make the slot check atomic.
 
 Health is a bare `http.createServer`. GET /health returns 200 or 503 based on component status (stream, redis, decoder tracked independently). SIGINT/SIGTERM does graceful shutdown: cancel gRPC, quit redis, close health server.
 
@@ -39,4 +41,4 @@ Commander with create/verify/list/stats. Verify fetches on-chain and Redis concu
 
 6 program tests (mocha + bankrun): store, empty text, text too long, PDA determinism, close with rent reclaim, close rejected for wrong author.
 
-16 indexer tests (bun:test + ioredis-mock): decoder, redis store, and full pipeline integration. The large nonce and cursor regression tests are there because both were real bugs.
+22 indexer tests (bun:test + ioredis-mock): decoder, redis store, full pipeline integration, and reconciliation.

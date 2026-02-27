@@ -3,8 +3,8 @@ import { PROGRAM_ID } from "../../shared/program";
 
 const schema = z.object({
   rpcEndpoint: z.url(),
-  laserstreamEndpoint: z.url().optional(),
-  laserstreamApiKey: z.string().min(1).optional(),
+  laserstreamEndpoint: z.url(),
+  laserstreamApiKey: z.string().min(1),
   redisUrl: z.string().default("redis://localhost:6379"),
   logLevel: z.enum(["debug", "info", "warn", "error"]).default("info"),
   healthPort: z.coerce.number().default(8080),

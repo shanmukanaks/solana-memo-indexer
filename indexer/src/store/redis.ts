@@ -120,11 +120,12 @@ export async function getRecentMemos(
 
 export async function getIndexerCursor(
   redis: Redis
-): Promise<{ lastSlot: number; updatedAt: number }> {
+): Promise<{ lastSlot: number; updatedAt: number; lastReconciledSlot: number }> {
   const raw = await redis.hgetall(CURSOR_KEY);
   return {
     lastSlot: parseInt(raw.lastSlot ?? "0", 10),
     updatedAt: parseInt(raw.updatedAt ?? "0", 10),
+    lastReconciledSlot: parseInt(raw.lastReconciledSlot ?? "0", 10),
   };
 }
 

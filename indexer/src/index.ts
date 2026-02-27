@@ -1,11 +1,13 @@
 import "dotenv/config";
 import fastq from "fastq";
 import { Connection, PublicKey } from "@solana/web3.js";
+import { createHelius } from "helius-sdk";
 import { config } from "./config";
 import { createLogger } from "./logger";
 import { createRedisClient, storeMemo, getIndexerCursor, setIndexerStartedAt } from "./store/redis";
 import { decodeMemoAccount } from "./decode/memo";
 import { createStream } from "./stream/factory";
+import { reconcile as runReconcile } from "./reconcile";
 import { HealthTracker } from "./health/tracker";
 import { startHealthServer } from "./health/server";
 import type { AccountUpdate } from "./stream/types";
@@ -15,10 +17,7 @@ const decodeLogger = logger.child({ component: "decoder" });
 const storeLogger = logger.child({ component: "store" });
 const startedAt = Date.now();
 
-const redis = createRedisClient(
-  config.redisUrl,
-  logger.child({ component: "redis" })
-);
+const redis = createRedisClient(config.redisUrl, logger.child({ component: "redis" }));
 
 const health = new HealthTracker();
 health.update("stream", "starting");
@@ -49,7 +48,10 @@ const MAX_QUEUE_SIZE = 10_000;
 stream.on("account", (update: AccountUpdate) => {
   streamErrors = 0;
   if (queue.length() >= MAX_QUEUE_SIZE) {
-    logger.warn({ queueSize: queue.length(), slot: update.slot }, "Queue full, dropping");
+    logger.warn(
+      { queueSize: queue.length(), slot: update.slot },
+      "Queue full, dropping (reconciliation will catch)",
+    );
     return;
   }
   queue.push(update);
@@ -60,10 +62,7 @@ stream.on("error", (err: Error) => {
   health.update("stream", "unhealthy", err.message);
 
   if (streamErrors >= MAX_STREAM_ERRORS) {
-    logger.fatal(
-      { errors: streamErrors },
-      "Too many stream errors, exiting"
-    );
+    logger.fatal({ errors: streamErrors }, "Too many stream errors, exiting");
     process.exit(1);
   }
 });
@@ -74,7 +73,7 @@ const server = startHealthServer(
   stream,
   startedAt,
   logger.child({ component: "health" }),
-  () => queue.length()
+  () => queue.length(),
 );
 
 let shuttingDown = false;
@@ -83,6 +82,7 @@ async function shutdown(signal: string) {
   shuttingDown = true;
   logger.info({ signal }, "Shutting down");
 
+  if (reconcileTimer) clearInterval(reconcileTimer);
   server.close();
   await stream.shutdown().catch(() => {});
   await redis.quit().catch(() => {});
@@ -110,6 +110,22 @@ async function backfill() {
   return slot;
 }
 
+const RECONCILE_INTERVAL = 5 * 60_000; // 5 min
+let reconcileTimer: ReturnType<typeof setInterval> | null = null;
+
+const helius = createHelius({ apiKey: config.laserstreamApiKey });
+
+async function reconcile() {
+  await runReconcile({
+    getSlot: () => new Connection(config.rpcEndpoint).getSlot(),
+    getProgramAccountsV2: helius.getProgramAccountsV2,
+    redis,
+    enqueue: (update) => queue.push(update),
+    logger,
+    programId: config.programId,
+  });
+}
+
 async function start() {
   await redis.ping();
   health.update("redis", "healthy");
@@ -124,16 +140,21 @@ async function start() {
     fromSlot = await backfill();
   }
 
-  setIndexerStartedAt(redis, startedAt).catch((err) => logger.warn({ err }, "Failed to set startedAt"));
+  setIndexerStartedAt(redis, startedAt).catch((err) =>
+    logger.warn({ err }, "Failed to set startedAt"),
+  );
 
   await stream.connect(fromSlot);
   health.update("stream", "healthy");
+
+  reconcileTimer = setInterval(reconcile, RECONCILE_INTERVAL);
   logger.info(
     {
       programId: config.programId,
       healthPort: config.healthPort,
+      reconcileIntervalMs: RECONCILE_INTERVAL,
     },
-    "Indexer running"
+    "Indexer running",
   );
 }
 
